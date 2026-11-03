@@ -5,6 +5,8 @@ package otlptrace_test
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,7 +18,8 @@ import (
 )
 
 type client struct {
-	uploadErr error
+	uploadErr   error
+	logEndpoint string
 }
 
 var _ otlptrace.Client = &client{}
@@ -31,6 +34,29 @@ func (c *client) Stop(ctx context.Context) error {
 
 func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.ResourceSpans) error {
 	return c.uploadErr
+}
+
+func (c *client) MarshalLog() interface{} {
+	return struct{ Endpoint string }{Endpoint: c.logEndpoint}
+}
+
+func TestExporterMarshalLogDoesNotIncludeClientConfig(t *testing.T) {
+	const sensitiveEndpoint = "user:pass@collector.internal:4318"
+
+	exp := otlptrace.NewUnstarted(&client{logEndpoint: sensitiveEndpoint})
+
+	marshaled := exp.MarshalLog()
+	clientField := reflect.ValueOf(marshaled).FieldByName("Client")
+	if assert.True(t, clientField.IsValid()) {
+		// The client must be represented by its type only, never by its
+		// value (which a logger would recursively marshal).
+		assert.Equal(t, reflect.String, clientField.Kind())
+		assert.Equal(t, "*otlptrace_test.client", fmt.Sprint(clientField.Interface()))
+	}
+
+	logged := fmt.Sprintf("%+v", marshaled)
+	assert.Contains(t, logged, "otlptrace")
+	assert.NotContains(t, logged, sensitiveEndpoint)
 }
 
 func TestExporterClientError(t *testing.T) {
